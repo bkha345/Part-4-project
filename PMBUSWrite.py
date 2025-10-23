@@ -86,6 +86,27 @@ bus = smbus2.SMBus(4)
 # we want the bus at 0x13 and 0x14 which translate to 0x40 and 0x41 respectively??
 # vccintbus = smbus2.SMBus(4)
 # vbrambus = smbus2.SMBus(0x14)
+def setVoltage(bus, address, destination, voltageDecimal):
+    """
+    :param bus: The bus that the sensor is connected to
+    :param address: The address of the rail that we want to read
+    :param destination: The actual value inside the rail (See datasheet)
+    :param voltageDecimal: The voltage to be written to the rail AS A DECIMAL
+    :return: None
+    """
+
+    # voltageDecimal # This needs to be converted to a value between 0 and 4096 and written into hex
+    if voltageDecimal < 0 or voltageDecimal > 1: # out of bounds
+        raise Exception(f"Voltage must be between 0 and 1, entered voltage: {voltageDecimal}")
+
+    try:
+        bus.write_word_data(address, destination, (int(voltageDecimal*4096)))
+        return True
+    except OSError as e:
+        print(f"Error writing to device at address {hex(address)}: {e}")
+        return False
+
+setVoltage(smbus2.SMBus(4), 0x13, 0x21, 0.85)  # reset back to normal
 
 print("Logging data...")
 count = 1 # only run the script for ~ 10s
@@ -107,10 +128,10 @@ while count > 0:
 
     # attempting to write
 
-    write_data(bus, 0x13, 0x21, 0x0800) # down by literally nothing
+    # write_data(bus, 0x13, 0x21, 0x0800) # down by literally nothing
     time.sleep(1) # delay
-    rloop(bus,0x20) # VOutmode
-    rloop(bus,0x21) # VOUTCommand
+    rloop(bus,0x8B) # VOutmode
+    rloop(bus,0x8C) # VOUTCommand
     rloop(bus,0x24) # VOUTMax
     rloop(bus,0x8b) # Read VOUT
 
@@ -119,7 +140,7 @@ while count > 0:
     print("Done")
     for i in range(20):
         time.sleep(0.25)
-        balt = read_data(bus, 0x13, 0x21)
+        balt = read_data(bus, 0x13, 0x8C)
         if balt is not None:
             print(f"{hex(balt)}")
     # every other value increment 1

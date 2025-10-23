@@ -13,7 +13,7 @@ def hash_file(filepath): # GPT function, used to check that the file is the same
     return sha256_hash.hexdigest()
 
 # Example usage
-file_path = "PMBus.py"
+file_path = "Part-4-project/PMBus.py"
 print(f"SHA-256: {hash_file(file_path)}")
 
 def upload_to_board(lst):
@@ -56,7 +56,9 @@ def upload_to_board(lst):
         child = pexpect.spawn(cmd)
         child.expect('password:')
         child.sendline('root')
-        child.expect(pexpect.EOF)
+        for line in child: # progress bar
+            print(f"Line: {line.decode('utf-8').strip()}")
+
         print("Copied successfully")
 
         print(f"Current Hash of {fileLocationLocal}:")
@@ -87,10 +89,13 @@ if __name__ == "__main__":
     # 2. user (default = root)
     # 3. board_ip (defined above, otherwise defaults 192.168.9.2)
     # 4. destination (default = "/home/root"
-    PMBuslst = ["/home/bkha345/Desktop/Scripts/PMBus.py", "root", board_ip, "/home/root"]
+    PMBuslst = ["/home/bkha345/Desktop/Scripts/Part-4-project/PMBus.py", "root", board_ip, "/home/root"]
     upload_to_board(PMBuslst)
-    PMBUSWritelst = ["/home/bkha345/Desktop/Scripts/PMBUSWrite.py", "root", board_ip, "/home/root"]
+    PMBUSWritelst = ["/home/bkha345/Desktop/Scripts/Part-4-project/PMBUSWrite.py", "root", board_ip, "/home/root"]
     upload_to_board(PMBUSWritelst)
-    # setuplst = ["/home/bkha345/Desktop/Scripts/setup.py", "root", board_ip, "/home/root"]
-    # upload_to_board(setuplst)
-
+    # Resnet18 = ["/home/bkha345/Desktop/Vitis-AI/resnet18.tar", "root", board_ip, "/home/root"]
+    # upload_to_board(Resnet18)
+    setuplst = ["/home/bkha345/Desktop/Scripts/Part-4-project/setup.py", "root", board_ip, "/home/root"]
+    upload_to_board(setuplst)
+    compendium = ["/home/bkha345/Desktop/Scripts/Part-4-project/compendium.txt", "root", board_ip, "/home/root"]
+    upload_to_board(compendium)

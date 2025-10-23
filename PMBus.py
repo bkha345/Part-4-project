@@ -1,11 +1,19 @@
-import os
-import glob
 import smbus2
 import time
 import threading
 import subprocess
 import argparse
 
+# constants
+BUS_NUMBER = 4
+VCCINT_RAIL = 0x13
+VCCBRAM_RAIL = 0x14
+VOLTAGE_RAIL = VCCINT_RAIL
+DESTINATION_REGISTER = 0x21
+ZCU102_NOM = 0.85
+NOMINAL_VOLTAGE = ZCU102_NOM
+
+BUS_LINE = smbus2.SMBus(BUS_NUMBER)
 
 # This is to pass the argument to switch between power advantage and UART
 parser = argparse.ArgumentParser(description='PA or UART')
@@ -24,69 +32,7 @@ else:
 # define out here
 stop_event = threading.Event()
 
-lookup = {
-        "ina226_u16" : "VCC3V3",
-        "ina226_u80" : "VCCAUX",
-        "ina226_u93" : "VCCO_PSDDR_504",
-        "ina226_u79" : "VCCINT",
-        "ina226_u85" : "MGTRAVCC",
-        "ina226_u15" : "VCCOPS3",
-        "ina226_u78" : "VCCPSAUX",
-        "ina226_u75" : "MGTAVTT",
-        "ina226_u76" : "VCCPSINTFP",
-        "ina226_u65" : "CADJ_FMC",
-        "ina226_u84" : "VCC1V2",
-        "ina226_u88" : "VCCOPS",
-        "ina226_u81" : "VCCBRAM",
-        "ina226_u86" : "MGTRAVTT",
-        "ina226_u92" : "VCCPSDDRPLL",
-        "ina226_u77" : "VCCPSINTLP",
-        "ina226_u87" : "VCCPSPLL",
-        "ina226_u74" : "MGTAVCC"
-    }
-
-def read_file(path):
-    try:
-        with open(path) as f:
-            return f.read().strip()
-    except:
-        return None
-
-def print_sensor_values(hwmon):
-    name = read_file(os.path.join(hwmon, "name"))
-    if not name or not name.startswith("ina226"):
-        return  # Only INA226 devices
-
-    print(f"\n=== {hwmon} ({name} : {lookup[name]}) ===")
-
-    # Possible sensor types to read
-    sensor_types = ["in", "curr", "power"]
-
-    for sensor_type in sensor_types:
-        files = glob.glob(os.path.join(hwmon, f"{sensor_type}*_input"))
-        for file_path in files:
-            base = os.path.basename(file_path).replace("_input", "")
-            label_path = os.path.join(hwmon, f"{base}_label")
-            label = read_file(label_path) or base
-            value = read_file(file_path)
-            if value:
-                unit = {
-                    "in": "mV",
-                    "curr": "mA",
-                    "power": "uW" # I think this is the more appropriate unit
-                }.get(sensor_type, "")
-                print(f"{label}: {int(value)} {unit}")
-
-def getReadings(filePath, vccint, safe = True):
-    # safe = True means that we are threading and salfe = False means we are not
-    if not safe:
-        print_sensor_values(f"{filePath}{vccint}") # run until the stop event is set
-        return
-    while not stop_event.is_set() and safe:
-        print_sensor_values(f"{filePath}{vccint}") # run until the stop event is set
-        time.sleep(0.25) # short break
-
-def read_data(bus, device_address, location):
+def readData(bus, device_address, location):
     try:
         # Read the data from the device
         data = bus.read_word_data(device_address, location)
@@ -96,67 +42,98 @@ def read_data(bus, device_address, location):
         return None
 
 def readLoop(bus, rail, location):
-        alt = read_data(bus, 0x13, location)
+        alt = readData(bus, VOLTAGE_RAIL, location)
         if alt is not None:
             print(f"{location}: {hex(alt)} || {alt} Value: {alt/4096}V")
+
+def readAll(bus, voltageLocation, currentLocation):
+    alt = readData(bus, VOLTAGE_RAIL, voltageLocation)
+    alt2 = readData(bus, VOLTAGE_RAIL, currentLocation)
+    if alt is not None and alt2 is not None:
+        print(f"Power: {alt/4096:.2f}V x {alt2/4096:.2f}A = {(alt/4096)*(alt2/4096):.2f}W")
+        # print(f"Power: {alt/4096:.2f}V ({alt}) x {alt2/4096:.2f}A ({alt2})= {(alt/4096)*(alt2/4096):.2f}W") # debug
+
 
 def getReadingsBus(busNumber, safe = True):
     # safe = True means that we are threading and safe = False means we are not
     bus = smbus2.SMBus(busNumber)
     if not safe:
-        readLoop(bus, 0x13, 0x8B)
+        readAll(bus, 0x8B, 0x8C)
         return # we want to get out of here
-    while not stop_event.is_set() and safe:
-        readLoop(bus, 0x13, 0x8B)
-        time.sleep(0.25)
+    try:
+        while not stop_event.is_set() and safe:
+            readAll(bus, 0x8B, 0x8C)
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        stop_event.set()
 
 def runCommand(cmd, cwd):
     subprocess.run(cmd, shell=True, cwd=cwd)
+
+def stop():
     stop_event.set()
 
-def runResnet18():
-    volt = 0.85
-    for _ in range(28): # step down 5 times
+def undervoltingLoop(initialvoltage, cwd, cmd, iter, step):
+    volt = initialvoltage
+    for _ in range(iter):
         print("==============================")
         print(f"Voltage: {volt:.2f}")
         print("==============================")
-        setVoltage(smbus2.SMBus(4), 0x13, 0x21, volt)
-        cwd = "./Vitis-AI/examples/vai_library/samples/classification"
-        buildsh = "./build.sh"
-        resnet18cmd = "./test_jpeg_classification resnet18_pt ~/Vitis-AI/examples/vai_library/samples/classification/images/002.JPEG"
-        # runCommand(buildsh, cwd)
-        runCommand(resnet18cmd, cwd)
-        volt -= 0.01
-    setVoltage(smbus2.SMBus(4), 0x13, 0x21, 0.85) # reset back to normal
+        setVoltage(BUS_LINE, VOLTAGE_RAIL, DESTINATION_REGISTER, volt)
+        runCommand(cmd, cwd)
+        volt -= step
+    setVoltage(BUS_LINE, VOLTAGE_RAIL, DESTINATION_REGISTER, NOMINAL_VOLTAGE) # reset back to normal
+    stop()
 
-def runResnet50():
-    volt = 0.85
-    for _ in range(28): # step down 5 times
-        print("==============================")
-        print(f"Voltage: {volt:.2f}")
-        print("==============================")
-        setVoltage(smbus2.SMBus(4), 0x13, 0x21, volt)
-        cwd = "./Vitis-AI/examples/vai_runtime/resnet50"
-        resnet50cmd = "./resnet50 /usr/share/vitis_ai_library/models/resnet50/resnet50.xmodel"
-        # runCommand(buildsh, cwd)
-        runCommand(resnet50cmd, cwd)
-        volt -= 0.01
-    setVoltage(smbus2.SMBus(4), 0x13, 0x21, 0.85) # reset back to normal
+def runResNet18():
+    # hypothetically this does the same
+    cwd = "./Vitis-AI/examples/vai_library/samples/classification"
+    ResNet18Command = "./test_jpeg_classification resnet18_pt ~/Vitis-AI/examples/vai_library/samples/classification/images/002.JPEG"
+    NUM_STEPS = 28
+    step = 0.01
+    undervoltingLoop(NOMINAL_VOLTAGE, cwd=cwd, cmd = ResNet18Command, iter=NUM_STEPS, step=step)
 
+def runResNet50():
+    # hypothetically this does the same
+    cwd = "./Vitis-AI/examples/vai_runtime/resnet50"
+    resnet50cmd = "./resnet50 /usr/share/vitis_ai_library/models/resnet50/resnet50.xmodel"
+    NUM_STEPS = 28
+    step = 0.01
+    undervoltingLoop(NOMINAL_VOLTAGE, cwd=cwd, cmd = resnet50cmd, iter=NUM_STEPS, step=step)
+
+def runSqueezeNet():
+    # hypothetically this does the same
+    cwd = "./Vitis-AI/examples/vai_runtime/squeezenet_pytorch"
+    SqueezeNetcmd = "./squeezenet_pytorch /usr/share/vitis_ai_library/models/squeezenet_pt/squeezenet_pt.xmodel"
+    NUM_STEPS = 26
+    step = 0.01
+    undervoltingLoop(NOMINAL_VOLTAGE, cwd=cwd, cmd = SqueezeNetcmd, iter=NUM_STEPS, step=step)
+
+def runInception():
+    # hypothetically this does the same
+    cwd = "./Vitis-AI/examples/vai_runtime/inception_v1_mt_py"
+    Inceptioncmd = "/usr/bin/python3 inception_v1.py 1 /usr/share/vitis_ai_library/models/inception_v1_tf/inception_v1_tf.xmodel"
+    NUM_STEPS = 26
+    step = 0.01
+    undervoltingLoop(NOMINAL_VOLTAGE, cwd=cwd, cmd = Inceptioncmd, iter=NUM_STEPS, step=step)
+
+def runCompendium():
+
+    # open file
+    f = open("compendium.txt", "r")
+    for v in f:
+        # for each line in the file read and set the voltage to it
+        setVoltage(BUS_LINE, VOLTAGE_RAIL, DESTINATION_REGISTER, float(v.strip()))  # reset back to normal
+        time.sleep(0.25) # change as needed
+    f.close()
+
+    setVoltage(BUS_LINE, VOLTAGE_RAIL, DESTINATION_REGISTER, NOMINAL_VOLTAGE) # reset back to normal
+    stop()
 
 def setVoltage(bus, address, destination, voltageDecimal):
-    """
-    :param bus: The bus that the sensor is connected to
-    :param address: The address of the rail that we want to read
-    :param destination: The actual value inside the rail (See datasheet)
-    :param voltageDecimal: The voltage to be written to the rail AS A DECIMAL
-    :return: None
-    """
-
-    # voltageDecimal # This needs to be converted to a value between 0 and 4096 and written into hex
+    # This needs to be converted to a value between 0 and 4096 and written into hex
     if voltageDecimal < 0 or voltageDecimal > 1: # out of bounds
         raise Exception(f"Voltage must be between 0 and 1, entered voltage: {voltageDecimal}")
-
     try:
         bus.write_word_data(address, destination, (int(voltageDecimal*4096)))
         return True
@@ -164,42 +141,96 @@ def setVoltage(bus, address, destination, voltageDecimal):
         print(f"Error writing to device at address {hex(address)}: {e}")
         return False
 
+def selectedModel(model, threaded=False):
+    if threaded:
+        if model=="ResNet50":
+            return runResNet50
+        elif model=="ResNet18":
+            return runResNet18
+        elif model=="SqueezeNet":
+            return runSqueezeNet
+        elif model=="Inception":
+            return runInception
+        elif model=="Compendium":
+            return runCompendium
+    else:
+        if model=="ResNet50":
+            return runResNet50()
+        elif model=="ResNet18":
+            return runResNet18()
+        elif model=="SqueezeNet":
+            return runSqueezeNet()
+        elif model=="Inception":
+            return runInception()
+        elif model=="Compendium":
+            return runCompendium()
+
+
+    raise Exception(f"Model {model} not supported")
+
 def main():
-    filePath = "/sys/class/hwmon/hwmon"
-    vccint = 12
-    # vccbram = 13
-    shellCommand = "./test_performance_facedetect densebox_320_320 test_performance_facedetect.list -t 3 -s 60" # run with 3 threads for 60 seconds
-    shellCommand = "./test_performance_facedetect densebox_320_320 test_performance_facedetect.list -t 3 -s 20" # run with 3 threads for 60 seconds
 
-    setVoltage(smbus2.SMBus(4), 0x13, 0x21, 0.85)
+    defaultmodel = "SqueezeNet"
 
+    print("=======================")
+    print("=== Model Selection ===")
+    print("1. Inception   ")
+    print("2. ResNet-18   ")
+    print("3. ResNet-50   ")
+    print("4. SqueezeNet  ")
+    print("5. Compendium  ")
+    print("=======================")
+    modelchoice = input(f"Please select a model number or \"\" to use {defaultmodel}: ")
+    if modelchoice.isnumeric(): # if it is numeric
+        mchoice = int(modelchoice)
+        if mchoice == 1:
+            model = "Inception"
+        elif mchoice == 2:
+            model = "ResNet18"
+        elif mchoice == 3:
+            model = "ResNet50"
+        elif mchoice == 4:
+            model = "SqueezeNet"
+        elif mchoice == 5:
+            model = "Compendium"
+        else:
+            raise Exception(f"{mchoice} is an invalid choice")
+    else: # if it is not numeric (either blank or other input)
+        print(f"Using default model: {defaultmodel}")
+        model = defaultmodel
+
+    print("==============================")
+    print(f"=== Using Model: {model} ===")
+    print("==============================")
+    shellCommand = "./test_performance_facedetect densebox_320_320 test_performance_facedetect.list -t 3 -s 20" # run with 3 threads for 20 seconds
+
+    setVoltage(smbus2.SMBus(BUS_NUMBER), VOLTAGE_RAIL, DESTINATION_REGISTER, NOMINAL_VOLTAGE)
     directory = "./Vitis-AI/examples/vai_library/samples/facedetect"
-    getReadings(filePath, vccint, False)
-    getReadingsBus(4, False)
 
     if isThreaded:
         # shellThread = threading.Thread(target=runCommand, args=(shellCommand,directory,))
-        shellThread = threading.Thread(target=runResnet18)
-        # monitorThread = threading.Thread(target=getReadings, args=(filePath, vccint, True,))
-        monitorThread = threading.Thread(target=getReadingsBus, args=(4, True,))
-        shellThread.start()
-        monitorThread.start()
+        monitorThread = threading.Thread(target=getReadingsBus, args=(4, True,), daemon=True)
+        shellThread = threading.Thread(target=selectedModel(model, threaded=True), daemon=True)
         print("Threads started")
-        monitorThread.join()
-        shellThread.join()
+        monitorThread.start()
+        shellThread.start()
+        try:
+            while monitorThread.is_alive() or shellThread.is_alive():
+                monitorThread.join(timeout=1)
+                shellThread.join(timeout=1)
 
-        print("==============================")
-        print("==========Finished============")
-        print("==============================")
-
+        except KeyboardInterrupt:
+            print("Shutting down")
+            # end all other processes
+            setVoltage(smbus2.SMBus(4), VOLTAGE_RAIL, DESTINATION_REGISTER, NOMINAL_VOLTAGE)  # reset back to normal
+            exit(1)
     else: # not threaded
+        print("Running the selected model")
+        selectedModel(model)
 
-        # runCommand(shellCommand,directory) # don't start the other thread
-        # shellThread = threading.Thread(target=runResnet18)
-        runResnet50()
-        print("==============================")
-        print("==========Finished============")
-        print("==============================")
+    print("==============================")
+    print("==========Finished============")
+    print("==============================")
 
 if __name__ == "__main__":
     main()

@@ -52,7 +52,11 @@ def main():
         print("No serial ports found.")
         sys.exit(0)
     choice = int(input("Choose port number: ")) - 1
-    baud_rate = int(input("Enter baud rate (default 115200): ") or "115200")
+    try:
+        baud_rate = int(input("Enter baud rate (default 115200): ") or "115200")
+    except ValueError:
+        print(f"Invalid baud rate entered. Using 115200 instead")
+        baud_rate = 115200 # set default
     port = ports[choice].device
 
     stop_event = threading.Event()
@@ -69,9 +73,14 @@ def main():
             data = input("> ")
             ser.write((data + "\n").encode('utf-8'))
         except KeyboardInterrupt:
-            print("\nExiting...")
-            ser.close()
-            break
+            f = input("Are you sure you want to exit the program? [y/N]")
+            f = f.lower()
+            if f == "y":
+                ser.close()
+                break
+            else:
+                # send a Ctrl + C
+                ser.write(b'\x03')
         except (serial.SerialException, OSError) as e:
             print(f"\n Send error: {e}")
             stop_event.set()

@@ -22,6 +22,8 @@ print(f"SHA-256 PMBus: {hash_file(file_path)}")
 # check the current version of the PMBusWrite script
 file_path = "PMBUSWrite.py"
 print(f"SHA-256 PMBUSWrite: {hash_file(file_path)}")
+file_path = "compendium.txt"
+print(f"SHA-256 Compendium: {hash_file(file_path)}")
 # End Of Program
 print("==============")
 print("Setup Complete")
